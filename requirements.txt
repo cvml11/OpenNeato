@@ -1,0 +1,12 @@
+# --- Hardware Interface ---
+pyserial>=3.5
+
+# --- Web Server Backend ---
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+pydantic>=2.0.0
+python-multipart    # Per gestire form data e upload futuri
+websockets>=10.0    # Usato internamente da uvicorn/fastapi, meglio esplicitarlo
+
+# --- Utilities ---
+aiofiles>=23.0      # Utile per servire file statici asincroni con FastAPI
