@@ -25,6 +25,13 @@ do_install() {
     whiptail --title "System Update" --infobox "Updating apt repositories and installing dependencies..." 8 78
     apt-get update
     apt-get install -y ros-jazzy-ros-base ros-jazzy-nav2-simple-commander ros-jazzy-rosbridge-server python3-venv git build-essential rsync
+    
+    # Time Persistence (Fake HW Clock) for systems without RTC
+    # Prevents ROS 2 TF errors due to negative time jumps on boot
+    apt-get install -y fake-hwclock
+    systemctl enable fake-hwclock
+    systemctl start fake-hwclock
+    fake-hwclock save
 
     # 2. User Setup
     if [ -n "$SUDO_USER" ]; then

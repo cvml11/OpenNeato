@@ -10,7 +10,7 @@ import math
 import struct
 
 from std_msgs.msg import Header
-from std_msgs.msg import String
+from std_msgs.msg import String, Int32
 from sensor_msgs.msg import BatteryState, LaserScan, PointCloud2, PointField
 from geometry_msgs.msg import Twist
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
@@ -39,6 +39,7 @@ class NeatoDriver(Node):
         self.serial_lock = threading.Lock()
         self.connected = False
         self.emergency_until = 0.0
+        self.last_valid_packet_time = time.time()
 
         # --- Publishers ---
         self.battery_pub = self.create_publisher(BatteryState, '/battery_state', 10)
@@ -46,12 +47,20 @@ class NeatoDriver(Node):
         self.hazard_pub = self.create_publisher(PointCloud2, '/hazard_cloud', 10)
         self.floor_pub = self.create_publisher(String, '/floor_type', 10)
         self.diag_pub = self.create_publisher(DiagnosticStatus, '/hazard_status', 10)
+        # Publisher per sicurezza interna (Watchdog)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         # --- Subscribers ---
         self.cmd_vel_sub = self.create_subscription(
             Twist,
             '/cmd_vel',
             self.cmd_vel_callback,
+            10
+        )
+        self.sound_sub = self.create_subscription(
+            Int32,
+            '/play_sound',
+            self.play_sound_callback,
             10
         )
 
@@ -82,6 +91,7 @@ class NeatoDriver(Node):
             
             self.connected = True
             self.get_logger().info('Connessione seriale stabilita.')
+            self.last_valid_packet_time = time.time()  # Reset watchdog
             return True
         except serial.SerialException as e:
             self.connected = False
@@ -107,12 +117,37 @@ class NeatoDriver(Node):
 
     def main_loop(self):
         """Loop a 5Hz: Gestione connessione e lettura batteria."""
+        # --- Watchdog Check ---
+        if self.connected and (time.time() - self.last_valid_packet_time > 1.0):
+            self.get_logger().error("WATCHDOG: Serial Communication Lost (>1.0s)")
+            self.handle_serial_failure()
+            return
+
         if not self.connected:
             self.connect_serial()
             return
 
         # Lettura Sensori (Batteria, Drop, Mag, Brush)
         self.read_sensors()
+
+    def handle_serial_failure(self):
+        """Gestisce il timeout della seriale (Deadman Switch)."""
+        # 1. Pubblica DiagnosticStatus ERROR
+        diag = DiagnosticStatus()
+        diag.level = DiagnosticStatus.ERROR
+        diag.name = "Serial Connection"
+        diag.message = "Serial Communication Lost"
+        self.diag_pub.publish(diag)
+
+        # 2. Pubblica velocità 0 su /cmd_vel (per sicurezza interna)
+        stop_msg = Twist()
+        self.cmd_vel_pub.publish(stop_msg)
+
+        # 3. Tenta riconnessione
+        self.connected = False
+        # Tentativo di stop fisico se la porta è ancora mezza viva
+        self.send_command("SetMotor 0 0 0")
+        self.connect_serial()
 
     def read_sensors(self):
         """Invia GetAnalogSensors e parsa la risposta per batteria e sicurezza."""
@@ -131,15 +166,26 @@ class NeatoDriver(Node):
                 # Timeout di sicurezza per il loop di lettura
                 start_time = time.time()
                 while (time.time() - start_time) < 0.5:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                    raw_line = self.ser.readline()
+                    try:
+                        line = raw_line.decode('utf-8', errors='ignore').strip()
+                    except ValueError:
+                        continue
+
                     if not line:
                         continue
                     
+                    # Validation: ASCII stampabile e lunghezza minima (es. "A,1")
+                    if len(line) < 3 or not line.isprintable():
+                        continue
+
                     parts = line.split(',')
                     if len(parts) >= 2:
                         try:
                             # Memorizza chiave e valore (convertito a float)
                             sensors[parts[0]] = float(parts[1])
+                            # Pacchetto valido ricevuto
+                            self.last_valid_packet_time = time.time()
                         except ValueError:
                             pass
                     
@@ -259,12 +305,21 @@ class NeatoDriver(Node):
                     # Un driver di produzione potrebbe usare un parser a stati.
                     lines_read = 0
                     while lines_read < 365 and (time.time() - start_time) < 1.0:
-                        line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                        raw_line = self.ser.readline()
+                        try:
+                            line = raw_line.decode('utf-8', errors='ignore').strip()
+                        except ValueError:
+                            continue
+
                         if not line:
                             continue
                         
                         # Salta header o commenti
                         if line.startswith('Angle') or line.startswith('#') or line.startswith('GetLDSScan'):
+                            continue
+
+                        # Validation: ASCII stampabile e lunghezza minima
+                        if len(line) < 5 or not line.isprintable():
                             continue
 
                         parts = line.split(',')
@@ -281,6 +336,8 @@ class NeatoDriver(Node):
                                 else:
                                     scan_data.append((angle, float('inf'), 0))
                                 lines_read += 1
+                                # Dati validi ricevuti
+                                self.last_valid_packet_time = time.time()
                             except ValueError:
                                 pass
                 
@@ -360,6 +417,13 @@ class NeatoDriver(Node):
             except Exception as e:
                 self.get_logger().warn(f'Errore invio motori: {e}')
                 self.connected = False
+
+    def play_sound_callback(self, msg):
+        """Callback per riprodurre suoni di sistema."""
+        if not self.connected:
+            return
+        # ID 0: Startup, 1: Start Cleaning, 2: Stop Cleaning, 3: Error
+        self.send_command(f"PlaySound SoundID {msg.data}")
 
 def main(args=None):
     rclpy.init(args=args)

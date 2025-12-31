@@ -5,6 +5,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan, Imu
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import SetParametersResult
 
 class WallFollower(Node):
     def __init__(self):
@@ -15,13 +16,20 @@ class WallFollower(Node):
         self.sub_odom = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         self.sub_imu = self.create_subscription(Imu, 'imu', self.imu_callback, 10)
 
-        # Parametri PID
-        self.kp = 2.0
-        self.ki = 0.0
-        self.kd = 0.5
-        
-        self.target_distance = 0.10 # 10 cm
-        self.forward_speed = 0.15
+        # Parametri ROS (PID e Navigazione)
+        self.declare_parameter('kp', 2.0)
+        self.declare_parameter('ki', 0.0)
+        self.declare_parameter('kd', 0.5)
+        self.declare_parameter('target_distance', 0.10)
+        self.declare_parameter('forward_speed', 0.15)
+
+        self.kp = self.get_parameter('kp').value
+        self.ki = self.get_parameter('ki').value
+        self.kd = self.get_parameter('kd').value
+        self.target_distance = self.get_parameter('target_distance').value
+        self.forward_speed = self.get_parameter('forward_speed').value
+
+        self.add_on_set_parameters_callback(self.parameter_callback)
         
         self.prev_error = 0.0
         self.integral = 0.0
@@ -40,6 +48,22 @@ class WallFollower(Node):
         self.last_stuck_check_time = self.get_clock().now()
 
         self.get_logger().info("Wall Follower (Right) Started")
+
+    def parameter_callback(self, params):
+        for param in params:
+            if param.name == 'kp':
+                self.kp = param.value
+            elif param.name == 'ki':
+                self.ki = param.value
+            elif param.name == 'kd':
+                self.kd = param.value
+            elif param.name == 'target_distance':
+                self.target_distance = param.value
+            elif param.name == 'forward_speed':
+                self.forward_speed = param.value
+        
+        self.get_logger().info(f'PID Updated: P={self.kp:.2f} I={self.ki:.2f} D={self.kd:.2f}')
+        return SetParametersResult(successful=True)
 
     def imu_callback(self, msg):
         if self.is_recovering or self.is_finished:
