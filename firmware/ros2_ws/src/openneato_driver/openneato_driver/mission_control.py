@@ -5,6 +5,7 @@ import os
 import time
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import String
 from sensor_msgs.msg import BatteryState
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from rclpy.action import ActionClient
@@ -24,12 +25,16 @@ class MissionControl(Node):
         self.docking_client = ActionClient(self, DockToBase, 'dock_to_base')
         
         self.sub_battery = self.create_subscription(BatteryState, 'battery_state', self.battery_callback, 10)
+        self.sub_mission = self.create_subscription(String, 'mission/start', self.mission_start_callback, 10)
         
         self.state_file = "mission_dump.json"
         self.battery_level = 100.0
         self.is_mission_active = False
         self.current_waypoints = []
         self.current_waypoint_index = 0
+        
+        # Configurazione Zone
+        self.ZONES_CONFIG_FILE = "/opt/openneato/web_interface/backend/config.json"
         
         # Timer persistenza (10s)
         self.create_timer(10.0, self.save_state)
@@ -45,6 +50,61 @@ class MissionControl(Node):
     def battery_callback(self, msg):
         # Normalizza percentuale 0-100
         self.battery_level = msg.percentage if msg.percentage > 1.0 else msg.percentage * 100.0
+
+    def mission_start_callback(self, msg):
+        """Riceve una lista JSON di ID zona e avvia la missione."""
+        try:
+            zone_ids = json.loads(msg.data)
+            self.get_logger().info(f"Ricevuta richiesta pulizia per zone: {zone_ids}")
+            
+            waypoints = []
+            for z_id in zone_ids:
+                pose = self.load_zone_coordinates(z_id)
+                if pose:
+                    waypoints.append(pose)
+            
+            if waypoints:
+                self.current_waypoints = waypoints
+                self.current_waypoint_index = 0
+                self.is_mission_active = True
+                self.navigator.followWaypoints(self.current_waypoints)
+                self.get_logger().info(f"Navigazione avviata verso {len(waypoints)} zone.")
+            else:
+                self.get_logger().warn("Nessuna coordinata valida trovata per le zone richieste.")
+                
+        except json.JSONDecodeError:
+            self.get_logger().error("Errore decodifica JSON richiesta missione.")
+
+    def load_zone_coordinates(self, zone_id):
+        """Legge il config e calcola il baricentro della zona."""
+        if not os.path.exists(self.ZONES_CONFIG_FILE):
+            self.get_logger().error("File configurazione zone non trovato.")
+            return None
+            
+        try:
+            with open(self.ZONES_CONFIG_FILE, 'r') as f:
+                zones = json.load(f)
+                
+            for zone in zones:
+                if zone.get('id') == zone_id:
+                    points = zone.get('points', [])
+                    if not points:
+                        return None
+                    
+                    # Calcolo Baricentro (Media X, Media Y)
+                    avg_x = sum(p['x'] for p in points) / len(points)
+                    avg_y = sum(p['y'] for p in points) / len(points)
+                    
+                    # Crea PoseStamped
+                    p = PoseStamped()
+                    p.header.frame_id = 'map'
+                    p.pose.position.x = avg_x
+                    p.pose.position.y = avg_y
+                    p.pose.orientation.w = 1.0 # Orientamento neutro
+                    return p
+        except Exception as e:
+            self.get_logger().error(f"Errore lettura zone: {e}")
+        return None
 
     def save_state(self):
         if not self.is_mission_active:

@@ -171,23 +171,22 @@ class DockingServer(Node):
         return result
 
     def find_dock_reflector(self):
-        """Trova il picco di intensità nel Lidar."""
+        """Calcola il centroide ponderato dei riflettori (Weighted Average)."""
         if self.latest_scan is None:
             return None
         
-        # Cerca indice con intensità massima
-        max_intensity = -1.0
-        max_idx = -1
-
-        for i, intensity in enumerate(self.latest_scan.intensities):
-            if intensity > max_intensity:
-                max_intensity = intensity
-                max_idx = i
+        weighted_angle_sum = 0.0
+        intensity_sum = 0.0
         
-        if max_intensity > self.intensity_threshold:
-            # Converti indice in angolo radianti
-            angle = self.latest_scan.angle_min + (max_idx * self.latest_scan.angle_increment)
-            return angle
+        for i, intensity in enumerate(self.latest_scan.intensities):
+            if intensity > self.intensity_threshold:
+                angle = self.latest_scan.angle_min + (i * self.latest_scan.angle_increment)
+                weighted_angle_sum += angle * intensity
+                intensity_sum += intensity
+        
+        if intensity_sum > 0:
+            return weighted_angle_sum / intensity_sum
+            
         return None
 
     def align_robot(self, target_angle_rad):
