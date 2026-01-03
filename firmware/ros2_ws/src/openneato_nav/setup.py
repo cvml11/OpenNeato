@@ -16,6 +16,8 @@ setup(
         (os.path.join('share', package_name, 'launch'), glob('launch/*launch.py')),
         # Installa tutti i file di configurazione (params)
         (os.path.join('share', package_name, 'params'), glob('params/*.yaml')),
+	# Install the urdf descriptor of Neato
+        (os.path.join('share', package_name, 'urdf'), glob('urdf/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
